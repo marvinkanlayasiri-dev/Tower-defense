@@ -3,539 +3,335 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Simple Tower Defense (HTML Canvas)</title>
+  <title>.gmd Level Generator (Web)</title>
   <style>
-    :root { color-scheme: dark; }
-    body {
-      margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      background: #0b0f14; color: #e9eef5; display: grid; place-items: center; height: 100vh;
-    }
-    #wrap { width: min(920px, 96vw); }
-    header { display:flex; justify-content:space-between; align-items:center; gap:12px; margin: 10px 0; flex-wrap: wrap; }
-    .panel { display:flex; gap:10px; flex-wrap: wrap; align-items:center; }
-    .pill {
-      background:#121a24; border:1px solid #223044; padding:6px 10px; border-radius:999px;
-      font-size:14px; display:flex; gap:6px; align-items:center;
-    }
-    button {
-      background:#1b2736; color:#e9eef5; border:1px solid #2b3f5a;
-      padding:8px 12px; border-radius:10px; cursor:pointer; font-weight:600;
-    }
-    button:hover { filter: brightness(1.08); }
-    button:active { transform: translateY(1px); }
-    canvas {
-      width: 100%; height: auto; aspect-ratio: 16/9;
-      background: linear-gradient(180deg, #0d141e, #0a1018);
-      border:1px solid #223044; border-radius: 14px; display:block;
-    }
-    small { opacity: 0.8; }
-    .hint { margin-top: 8px; opacity: 0.85; line-height: 1.35; }
-    kbd {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-      font-size: 12px; padding: 2px 6px; border-radius: 6px;
-      background:#111926; border:1px solid #233449;
-    }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 16px; line-height: 1.35; }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin: 10px 0; }
+    label { display:inline-flex; gap:8px; align-items:center; }
+    input[type="range"], input[type="number"] { width: 220px; }
+    input[type="number"] { width: 110px; padding: 6px; }
+    button { padding: 10px 14px; border: 1px solid #ddd; background: #fff; border-radius: 10px; cursor: pointer; }
+    button:hover { background:#f7f7f7; }
+    .pill { padding: 4px 10px; border: 1px solid #ddd; border-radius: 999px; }
+    pre { background:#fafafa; border:1px solid #eee; padding:10px; border-radius:10px; overflow:auto; max-height: 260px; }
+    .warn { color:#8a2; }
+    .err { color:#b11; }
   </style>
 </head>
 <body>
-<div id="wrap">
-  <header>
-    <div class="panel">
-      <div class="pill">❤️ HP: <span id="hp">20</span></div>
-      <div class="pill">💰 Gold: <span id="gold">120</span></div>
-      <div class="pill">🌊 Wave: <span id="wave">1</span></div>
-      <div class="pill">👾 Alive: <span id="alive">0</span></div>
-      <div class="pill">🏗️ Towers: <span id="towers">0</span></div>
-    </div>
-    <div class="panel">
-      <button id="startBtn">Start / Next Wave</button>
-      <button id="pauseBtn">Pause</button>
-      <button id="resetBtn">Reset</button>
-    </div>
-  </header>
+  <h2>Geometry Dash .gmd Generator (Website)</h2>
 
-  <canvas id="c" width="960" height="540"></canvas>
+  <p>
+    Generates a <code>.gmd</code> file (zlib-compressed, base64) you can import with tools like GDShare-style importers.
+  </p>
 
-  <div class="hint">
-    <small>
-      Click on the grass to place a tower (<b>cost 40</b>). Towers can’t be placed on the path.
-      Towers auto-shoot the nearest enemy in range. If an enemy reaches the end, you lose HP.
-      Press <kbd>R</kbd> to toggle range preview.
-    </small>
+  <div class="row">
+    <label>Difficulty (1–10)
+      <input id="difficulty" type="range" min="1" max="10" value="5" />
+      <span class="pill" id="difficultyVal">5</span>
+    </label>
+
+    <label>Length (tiles)
+      <input id="tiles" type="range" min="120" max="900" step="30" value="360" />
+      <span class="pill" id="tilesVal">360</span>
+    </label>
+
+    <label>Seed
+      <input id="seed" type="number" value="12345" />
+    </label>
+
+    <button id="newSeed">New Seed</button>
+    <button id="download">Generate & Download .gmd</button>
   </div>
-</div>
 
-<script>
-(() => {
-  // ===== Canvas setup =====
-  const canvas = document.getElementById("c");
-  const ctx = canvas.getContext("2d");
+  <div class="row">
+    <span class="pill">Objects: <b id="objCount">0</b></span>
+    <span class="pill">Filename: <b id="fileName">level.gmd</b></span>
+    <span id="status"></span>
+  </div>
 
-  // ===== UI =====
-  const ui = {
-    hp: document.getElementById("hp"),
-    gold: document.getElementById("gold"),
-    wave: document.getElementById("wave"),
-    alive: document.getElementById("alive"),
-    towers: document.getElementById("towers"),
-    startBtn: document.getElementById("startBtn"),
-    pauseBtn: document.getElementById("pauseBtn"),
-    resetBtn: document.getElementById("resetBtn"),
-  };
+  <h3>Debug (first 400 chars of decoded payload)</h3>
+  <pre id="debug">(generate to see)</pre>
 
-  // ===== Game constants =====
-  const W = canvas.width, H = canvas.height;
-  const PATH_WIDTH = 54;
-  const TOWER_COST = 40;
+  <!-- Pako (zlib/deflate). If you need offline-only, tell me and I’ll give you a no-CDN bundle. -->
+  <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
 
-  const colors = {
-    bg: "#0b0f14",
-    grass1: "#0f1b12",
-    grass2: "#0d1710",
-    path: "#2b2b2f",
-    pathEdge: "#3a3a40",
-    tower: "#74d3ff",
-    towerBase: "#1b2736",
-    bullet: "#ffd28a",
-    enemy: "#ff6b8b",
-    enemy2: "#ff9f6b",
-    text: "#e9eef5",
-    danger: "#ff4d4d",
-    ok: "#39d98a",
-  };
+  <script>
+    // ----------------------------
+    // Helpers
+    // ----------------------------
+    const $ = (id) => document.getElementById(id);
 
-  // A simple polyline path (waypoints)
-  const path = [
-    { x:  60, y:  90 },
-    { x: 460, y:  90 },
-    { x: 460, y: 360 },
-    { x: 160, y: 360 },
-    { x: 160, y: 480 },
-    { x: 900, y: 480 },
-  ];
-
-  function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
-  function dist2(ax, ay, bx, by){ const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; }
-  function lerp(a, b, t){ return a + (b-a)*t; }
-
-  // Distance from point to segment (for "is on path" checks)
-  function pointSegmentDistance(px, py, ax, ay, bx, by) {
-    const vx = bx - ax, vy = by - ay;
-    const wx = px - ax, wy = py - ay;
-    const c1 = vx*wx + vy*wy;
-    if (c1 <= 0) return Math.hypot(px-ax, py-ay);
-    const c2 = vx*vx + vy*vy;
-    if (c2 <= c1) return Math.hypot(px-bx, py-by);
-    const t = c1 / c2;
-    const projx = ax + t*vx, projy = ay + t*vy;
-    return Math.hypot(px-projx, py-projy);
-  }
-
-  function isPointOnPath(px, py) {
-    for (let i=0;i<path.length-1;i++){
-      const a = path[i], b = path[i+1];
-      const d = pointSegmentDistance(px, py, a.x, a.y, b.x, b.y);
-      if (d <= PATH_WIDTH/2) return true;
+    function escapeStr(s) {
+      // escape commas/colons
+      return String(s).replaceAll(",", "\\,").replaceAll(":", "\\:");
     }
-    return false;
-  }
 
-  // Sample a position along path for an enemy by progress (0..1 along segments)
-  const segLengths = [];
-  let totalLen = 0;
-  for (let i=0;i<path.length-1;i++){
-    const a=path[i], b=path[i+1];
-    const len = Math.hypot(b.x-a.x, b.y-a.y);
-    segLengths.push(len);
-    totalLen += len;
-  }
-
-  function posAlongPath(t) {
-    t = clamp(t, 0, 1);
-    let d = t * totalLen;
-    for (let i=0;i<segLengths.length;i++){
-      const len = segLengths[i];
-      if (d <= len) {
-        const a=path[i], b=path[i+1];
-        const u = d/len;
-        return { x: lerp(a.x,b.x,u), y: lerp(a.y,b.y,u), segIndex:i, segU:u };
+    function bytesToBase64(bytes) {
+      // Convert Uint8Array to base64 safely in chunks
+      let binary = "";
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        const chunk = bytes.subarray(i, i + chunkSize);
+        binary += String.fromCharCode.apply(null, chunk);
       }
-      d -= len;
-    }
-    const last = path[path.length-1];
-    return { x:last.x, y:last.y, segIndex:segLengths.length-1, segU:1 };
-  }
-
-  function dirAlongPath(segIndex) {
-    const a = path[segIndex], b = path[segIndex+1];
-    const dx = b.x-a.x, dy = b.y-a.y;
-    const m = Math.hypot(dx,dy) || 1;
-    return { x: dx/m, y: dy/m };
-  }
-
-  // ===== Game state =====
-  let state;
-
-  function newState() {
-    return {
-      hp: 20,
-      gold: 120,
-      wave: 1,
-      running: true,
-      paused: false,
-      rangePreview: false,
-
-      enemies: [],
-      towers: [],
-      bullets: [],
-
-      waveInProgress: false,
-      spawnTimer: 0,
-      spawnedThisWave: 0,
-      toSpawnThisWave: 8,
-
-      // Difficulty scaling
-      enemyBaseHp: 40,
-      enemyBaseSpeed: 0.06, // progress per ms multiplier
-    };
-  }
-
-  function reset() {
-    state = newState();
-    updateUI();
-  }
-
-  // ===== Entities =====
-  function makeEnemy(wave) {
-    const hp = state.enemyBaseHp + (wave-1)*10;
-    const speed = state.enemyBaseSpeed + (wave-1)*0.008; // faster later
-    return {
-      t: 0,              // progress along path 0..1
-      hp,
-      maxHp: hp,
-      speed,
-      radius: 14,
-      bounty: 10 + Math.floor((wave-1)*2),
-      damage: 1,
-      color: (wave % 3 === 0) ? colors.enemy2 : colors.enemy,
-    };
-  }
-
-  function makeTower(x, y) {
-    return {
-      x, y,
-      range: 140,
-      fireRate: 0.5,      // shots per second
-      cooldown: 0,        // seconds
-      damage: 14,
-      bulletSpeed: 520,   // px per second
-    };
-  }
-
-  function makeBullet(x, y, target, damage, speed) {
-    return { x, y, target, damage, speed, r: 4 };
-  }
-
-  // ===== Wave control =====
-  function startWave() {
-    if (state.waveInProgress) return;
-    state.waveInProgress = true;
-    state.spawnTimer = 0;
-    state.spawnedThisWave = 0;
-    state.toSpawnThisWave = 7 + Math.floor(state.wave * 1.8); // scaling
-  }
-
-  // ===== Input (place towers) =====
-  function getMousePos(evt) {
-    const rect = canvas.getBoundingClientRect();
-    const sx = canvas.width / rect.width;
-    const sy = canvas.height / rect.height;
-    return {
-      x: (evt.clientX - rect.left) * sx,
-      y: (evt.clientY - rect.top) * sy,
-    };
-  }
-
-  canvas.addEventListener("click", (e) => {
-    if (!state.running || state.paused) return;
-    const {x,y} = getMousePos(e);
-
-    if (isPointOnPath(x,y)) return;
-
-    // avoid stacking towers too close
-    for (const t of state.towers) {
-      if (Math.hypot(t.x-x, t.y-y) < 34) return;
+      return btoa(binary);
     }
 
-    if (state.gold < TOWER_COST) return;
-    state.gold -= TOWER_COST;
-    state.towers.push(makeTower(x,y));
-    updateUI();
-  });
-
-  window.addEventListener("keydown", (e) => {
-    if (e.key.toLowerCase() === "r") state.rangePreview = !state.rangePreview;
-  });
-
-  // ===== Buttons =====
-  ui.startBtn.onclick = () => { if (!state.running) return; startWave(); };
-  ui.pauseBtn.onclick = () => { state.paused = !state.paused; ui.pauseBtn.textContent = state.paused ? "Resume" : "Pause"; };
-  ui.resetBtn.onclick = () => { reset(); ui.pauseBtn.textContent = "Pause"; };
-
-  // ===== Game loop =====
-  let last = performance.now();
-
-  function tick(now) {
-    const dtMs = now - last;
-    last = now;
-
-    if (state.running && !state.paused) {
-      update(dtMs / 1000, dtMs);
+    function base64ToBytes(b64) {
+      const bin = atob(b64);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
     }
-    render();
 
-    requestAnimationFrame(tick);
-  }
+    function zlibCompressToBase64(str) {
+      // pako.deflate produces zlib-wrapped deflate by default (good for most .gmd variants)
+      const input = new TextEncoder().encode(str);
+      const compressed = window.pako.deflate(input);
+      return bytesToBase64(compressed);
+    }
 
-  function update(dt, dtMs) {
-    // spawn enemies during wave
-    if (state.waveInProgress) {
-      state.spawnTimer -= dt;
-      const spawnInterval = Math.max(0.22, 0.65 - state.wave*0.03); // sec
-      if (state.spawnedThisWave < state.toSpawnThisWave && state.spawnTimer <= 0) {
-        state.enemies.push(makeEnemy(state.wave));
-        state.spawnedThisWave++;
-        state.spawnTimer = spawnInterval;
+    function zlibDecompressFromBase64(b64) {
+      const bytes = base64ToBytes(b64);
+      const decompressed = window.pako.inflate(bytes);
+      return new TextDecoder().decode(decompressed);
+    }
+
+    // ----------------------------
+    // "GMD" serializer (kS* + kA* arrays)
+    // ----------------------------
+    function createGmdString(level) {
+      const meta = [];
+      meta.push(`kS1:${escapeStr(level.name)}`);
+      meta.push(`kS2:${escapeStr(level.desc || "")}`);
+      meta.push(`kS3:${escapeStr(level.author || "Unknown")}`);
+      meta.push(`kS4:${level.version ?? "1"}`);
+      meta.push(`kS5:${level.song ?? 0}`);
+      meta.push(`kS6:${escapeStr(level.bg || "#000000")}`);
+      meta.push(`kS7:${escapeStr(level.gnd || "#ffffff")}`);
+      meta.push(`kS8:${level.length ?? "5000"}`);
+      meta.push(`kS9:${level.difficulty ?? "5"}`);
+      meta.push(`kS10:${level.secretCoins ?? "0"}`);
+      meta.push(`kS11:${level.featured ?? "0"}`);
+      meta.push(`kS12:${level.official ?? "0"}`);
+      meta.push(`kS13:${level.creatorID ?? "0"}`);
+      meta.push(`kS14:${level.songVolume ?? "100"}`);
+      meta.push(`kS15:${level.reserved ?? "0"}`);
+
+      // Arrays kA1..kA15
+      const kA = Array.from({ length: 15 }, () => []);
+
+      for (const o of level.level) {
+        kA[0].push(String(o.id ?? 0));                    // kA1
+        kA[1].push(String(o.col ?? 0));                   // kA2
+        kA[2].push(String((o.pos?.[0]) ?? 0));            // kA3 x
+        kA[3].push(String((o.pos?.[1]) ?? 0));            // kA4 y
+
+        let gid = o.gid;
+        if (gid === "" || gid === null || gid === undefined) gid = -1;
+        kA[4].push(String(gid));                          // kA5
+
+        kA[5].push(String(o.lay ?? 1));                   // kA6
+
+        let ext = String(o.ext ?? "");
+        if (ext) ext = ext.replaceAll(",", "|");          // common converter behavior
+        kA[6].push(ext);                                  // kA7
+
+        kA[7].push(String(o.rot ?? 0));                   // kA8
+        kA[8].push(String(o.scale ?? 1));                 // kA9
+        kA[9].push(String(o.movx ?? 0));                  // kA10
+        kA[10].push(String(o.movy ?? 0));                 // kA11
+        kA[11].push(String(o.movd ?? 0));                 // kA12
+        kA[12].push(String(o.movt ?? 0));                 // kA13
+        kA[13].push(String(o.movdelay ?? 0));             // kA14
+        kA[14].push("0");                                 // kA15 reserved
       }
-      // end wave when all spawned AND all dead/gone
-      if (state.spawnedThisWave >= state.toSpawnThisWave && state.enemies.length === 0) {
-        state.waveInProgress = false;
-        state.wave++;
+
+      for (let i = 0; i < 15; i++) {
+        meta.push(`kA${i+1}:${kA[i].join(",")}`);
       }
+
+      return meta.join(",");
     }
 
-    // move enemies
-    for (let i = state.enemies.length - 1; i >= 0; i--) {
-      const en = state.enemies[i];
-      en.t += en.speed * dtMs / 1000; // speed already per ms-ish; keep it simple
-      if (en.t >= 1) {
-        // enemy leaked
-        state.hp -= en.damage;
-        state.enemies.splice(i,1);
-        if (state.hp <= 0) {
-          state.hp = 0;
-          state.running = false;
-          state.waveInProgress = false;
+    // ----------------------------
+    // Simple level generator (blocks/spikes/gaps + rare portals)
+    // ----------------------------
+    // Object IDs (common in some community tooling; may vary by importer/mod)
+    const OBJ_BLOCK = 1;
+    const OBJ_SPIKE = 7;
+    const OBJ_MINI_PORTAL = 101;
+    const OBJ_NORMAL_PORTAL = 99;
+
+    function rng(seed) {
+      // Deterministic PRNG (Mulberry32)
+      let t = seed >>> 0;
+      return function() {
+        t += 0x6D2B79F5;
+        let x = t;
+        x = Math.imul(x ^ (x >>> 15), x | 1);
+        x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
+        return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    function generateLevelObjects({seed, difficulty, tiles}) {
+      const rnd = rng(seed);
+      const objs = [];
+
+      const tilePx = 100;
+      const groundY = 0;
+
+      const hazardProb = 0.05 + (difficulty * 0.015);     // ~0.065..0.20
+      const maxGap = 1 + Math.floor(difficulty / 3);      // 1..4
+      const platformChance = 0.03 + (difficulty * 0.005);
+
+      let gapRemaining = 0;
+
+      for (let i = 0; i < tiles; i++) {
+        const x = i * tilePx;
+
+        if (gapRemaining > 0) { gapRemaining--; continue; }
+
+        // Start a gap sometimes
+        if (rnd() < (0.03 + difficulty * 0.003)) {
+          gapRemaining = 1 + Math.floor(rnd() * maxGap);
+          continue;
+        }
+
+        // Ground block
+        objs.push({
+          id: OBJ_BLOCK, col: 1, pos: [x, groundY],
+          gid: -1, lay: 1, ext: "", rot: 0, scale: 1,
+          movx:0, movy:0, movd:0, movt:0, movdelay:0
+        });
+
+        // Spike
+        if (rnd() < hazardProb) {
+          objs.push({
+            id: OBJ_SPIKE, col: 3, pos: [x, groundY + 30],
+            gid: -1, lay: 1, ext: "", rot: 0, scale: 1,
+            movx:0, movy:0, movd:0, movt:0, movdelay:0
+          });
+        }
+
+        // Floating platform variation
+        if (rnd() < platformChance) {
+          objs.push({
+            id: OBJ_BLOCK, col: 2, pos: [x + (tilePx/2), groundY + 120],
+            gid: -1, lay: 1, ext: "", rot: 0, scale: 1,
+            movx:0, movy:0, movd:0, movt:0, movdelay:0
+          });
+        }
+
+        // Rare portal pair
+        if (i > 40 && i % 160 === 0) {
+          objs.push({
+            id: OBJ_MINI_PORTAL, col: 1, pos: [x, groundY + 60],
+            gid: -1, lay: 1, ext: "", rot: 0, scale: 1,
+            movx:0, movy:0, movd:0, movt:0, movdelay:0
+          });
+          objs.push({
+            id: OBJ_NORMAL_PORTAL, col: 1, pos: [x + 600, groundY + 60],
+            gid: -1, lay: 1, ext: "", rot: 0, scale: 1,
+            movx:0, movy:0, movd:0, movt:0, movdelay:0
+          });
         }
       }
+
+      return { objs, tilePx };
     }
 
-    // tower shooting
-    for (const tw of state.towers) {
-      tw.cooldown -= dt;
-      if (tw.cooldown > 0) continue;
+    function buildLevel({seed, difficulty, tiles}) {
+      const { objs, tilePx } = generateLevelObjects({seed, difficulty, tiles});
+      return {
+        name: `AI Gen (D${difficulty}) seed ${seed}`,
+        desc: `Generated .gmd level (blocks/spikes/gaps).`,
+        author: "Web Generator",
+        version: "1",
+        song: 0,
+        bg: "#1a1a1a",
+        gnd: "#333333",
+        length: String(tiles * tilePx),
+        difficulty: String(difficulty),
+        secretCoins: "0",
+        featured: "0",
+        official: "0",
+        creatorID: "0",
+        songVolume: "100",
+        reserved: "0",
+        level: objs
+      };
+    }
 
-      // find nearest in range
-      let best = null, bestD2 = Infinity;
-      for (const en of state.enemies) {
-        const p = posAlongPath(en.t);
-        const d2 = dist2(tw.x, tw.y, p.x, p.y);
-        if (d2 <= tw.range*tw.range && d2 < bestD2) {
-          bestD2 = d2;
-          best = en;
-        }
+    // ----------------------------
+    // UI wiring
+    // ----------------------------
+    function syncUI() {
+      $("difficultyVal").textContent = $("difficulty").value;
+      $("tilesVal").textContent = $("tiles").value;
+    }
+
+    $("difficulty").addEventListener("input", syncUI);
+    $("tiles").addEventListener("input", syncUI);
+
+    $("newSeed").addEventListener("click", () => {
+      // 32-bit unsigned seed
+      $("seed").value = String((Math.random() * 0xFFFFFFFF) >>> 0);
+    });
+
+    $("download").addEventListener("click", () => {
+      const status = $("status");
+      status.className = "";
+      status.textContent = "";
+
+      if (!window.pako) {
+        status.className = "err";
+        status.textContent = "pako failed to load. (CDN blocked?)";
+        return;
       }
-      if (best) {
-        tw.cooldown = 1 / tw.fireRate;
-        state.bullets.push(makeBullet(tw.x, tw.y, best, tw.damage, tw.bulletSpeed));
+
+      const difficulty = Number($("difficulty").value);
+      const tiles = Number($("tiles").value);
+      const seed = Number($("seed").value) >>> 0;
+
+      const level = buildLevel({seed, difficulty, tiles});
+      const gmdStr = createGmdString(level);
+      const gmdB64 = zlibCompressToBase64(gmdStr);
+
+      // Basic sanity: try decompressing and show first chunk
+      let decodedPreview = "";
+      try {
+        const roundtrip = zlibDecompressFromBase64(gmdB64);
+        decodedPreview = roundtrip.slice(0, 400);
+      } catch (e) {
+        status.className = "warn";
+        status.textContent = "Generated, but local decompress check failed (importer might still work).";
       }
-    }
 
-    // bullets update
-    for (let i = state.bullets.length - 1; i >= 0; i--) {
-      const b = state.bullets[i];
-      if (!b.target || state.enemies.indexOf(b.target) === -1) {
-        state.bullets.splice(i,1);
-        continue;
-      }
-      const tp = posAlongPath(b.target.t);
-      const dx = tp.x - b.x, dy = tp.y - b.y;
-      const d = Math.hypot(dx,dy) || 1;
+      $("debug").textContent = decodedPreview || "(no preview)";
+      $("objCount").textContent = String(level.level.length);
 
-      const step = b.speed * dt;
-      if (d <= step + b.r + b.target.radius) {
-        // hit
-        b.target.hp -= b.damage;
-        state.bullets.splice(i,1);
+      const filename = `level_D${difficulty}_seed${seed}.gmd`;
+      $("fileName").textContent = filename;
 
-        if (b.target.hp <= 0) {
-          // kill
-          state.gold += b.target.bounty;
-          const idx = state.enemies.indexOf(b.target);
-          if (idx !== -1) state.enemies.splice(idx,1);
-        }
-      } else {
-        b.x += (dx/d) * step;
-        b.y += (dy/d) * step;
-      }
-    }
+      // Download as a text file containing the base64 payload
+      const blob = new Blob([gmdB64], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
 
-    updateUI();
-  }
+      status.className = "";
+      status.textContent = "✅ Downloaded .gmd";
+    });
 
-  function updateUI() {
-    ui.hp.textContent = state.hp;
-    ui.gold.textContent = state.gold;
-    ui.wave.textContent = state.wave;
-    ui.alive.textContent = state.enemies.length;
-    ui.towers.textContent = state.towers.length;
-  }
-
-  // ===== Rendering =====
-  function drawGrass() {
-    // simple checker grass
-    const size = 48;
-    for (let y=0;y<H;y+=size){
-      for (let x=0;x<W;x+=size){
-        ctx.fillStyle = ((x/size + y/size) % 2 === 0) ? colors.grass1 : colors.grass2;
-        ctx.fillRect(x,y,size,size);
-      }
-    }
-  }
-
-  function drawPath() {
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-
-    // thick base
-    ctx.strokeStyle = colors.path;
-    ctx.lineWidth = PATH_WIDTH;
-    ctx.beginPath();
-    ctx.moveTo(path[0].x, path[0].y);
-    for (let i=1;i<path.length;i++) ctx.lineTo(path[i].x, path[i].y);
-    ctx.stroke();
-
-    // edges
-    ctx.strokeStyle = colors.pathEdge;
-    ctx.lineWidth = PATH_WIDTH + 6;
-    ctx.globalAlpha = 0.45;
-    ctx.beginPath();
-    ctx.moveTo(path[0].x, path[0].y);
-    for (let i=1;i<path.length;i++) ctx.lineTo(path[i].x, path[i].y);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-
-    // start/end markers
-    ctx.fillStyle = "#101826";
-    ctx.beginPath(); ctx.arc(path[0].x, path[0].y, 18, 0, Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc(path[path.length-1].x, path[path.length-1].y, 18, 0, Math.PI*2); ctx.fill();
-
-    ctx.fillStyle = colors.ok;
-    ctx.beginPath(); ctx.arc(path[0].x, path[0].y, 8, 0, Math.PI*2); ctx.fill();
-
-    ctx.fillStyle = colors.danger;
-    ctx.beginPath(); ctx.arc(path[path.length-1].x, path[path.length-1].y, 8, 0, Math.PI*2); ctx.fill();
-  }
-
-  function drawTowers() {
-    for (const t of state.towers) {
-      // base
-      ctx.fillStyle = colors.towerBase;
-      ctx.beginPath(); ctx.arc(t.x, t.y, 16, 0, Math.PI*2); ctx.fill();
-      // turret
-      ctx.fillStyle = colors.tower;
-      ctx.beginPath(); ctx.arc(t.x, t.y, 10, 0, Math.PI*2); ctx.fill();
-
-      if (state.rangePreview) {
-        ctx.strokeStyle = "rgba(116, 211, 255, 0.25)";
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(t.x, t.y, t.range, 0, Math.PI*2); ctx.stroke();
-      }
-    }
-  }
-
-  function drawEnemies() {
-    for (const en of state.enemies) {
-      const p = posAlongPath(en.t);
-
-      // body
-      ctx.fillStyle = en.color;
-      ctx.beginPath(); ctx.arc(p.x, p.y, en.radius, 0, Math.PI*2); ctx.fill();
-
-      // facing dot (direction)
-      const dir = dirAlongPath(Math.min(en._segIndex ?? p.segIndex, path.length-2));
-      ctx.fillStyle = "rgba(0,0,0,0.35)";
-      ctx.beginPath(); ctx.arc(p.x + dir.x*7, p.y + dir.y*7, 3.2, 0, Math.PI*2); ctx.fill();
-
-      // hp bar
-      const w = 34, h = 6;
-      const x = p.x - w/2, y = p.y - en.radius - 14;
-      ctx.fillStyle = "rgba(0,0,0,0.4)";
-      ctx.fillRect(x, y, w, h);
-      ctx.fillStyle = (en.hp/en.maxHp > 0.5) ? colors.ok : (en.hp/en.maxHp > 0.25 ? "#ffcc66" : colors.danger);
-      ctx.fillRect(x, y, w * clamp(en.hp/en.maxHp, 0, 1), h);
-      ctx.strokeStyle = "rgba(255,255,255,0.15)";
-      ctx.strokeRect(x, y, w, h);
-    }
-  }
-
-  function drawBullets() {
-    ctx.fillStyle = colors.bullet;
-    for (const b of state.bullets) {
-      ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2); ctx.fill();
-    }
-  }
-
-  function drawOverlay() {
-    if (!state.running) {
-      ctx.fillStyle = "rgba(0,0,0,0.55)";
-      ctx.fillRect(0,0,W,H);
-
-      ctx.fillStyle = colors.text;
-      ctx.font = "800 46px system-ui";
-      ctx.textAlign = "center";
-      ctx.fillText("Game Over", W/2, H/2 - 16);
-
-      ctx.font = "500 18px system-ui";
-      ctx.fillText("Click Reset to play again.", W/2, H/2 + 22);
-      ctx.textAlign = "left";
-    } else if (state.paused) {
-      ctx.fillStyle = "rgba(0,0,0,0.45)";
-      ctx.fillRect(0,0,W,H);
-
-      ctx.fillStyle = colors.text;
-      ctx.font = "700 34px system-ui";
-      ctx.textAlign = "center";
-      ctx.fillText("Paused", W/2, H/2);
-      ctx.textAlign = "left";
-    } else {
-      // top-left minimal HUD inside canvas
-      ctx.fillStyle = "rgba(0,0,0,0.30)";
-      ctx.fillRect(10, 10, 270, 44);
-
-      ctx.fillStyle = colors.text;
-      ctx.font = "600 14px system-ui";
-      const waveTxt = state.waveInProgress
-        ? `Wave ${state.wave} • Spawning ${state.spawnedThisWave}/${state.toSpawnThisWave}`
-        : `Wave ${state.wave} • Ready (click Start / Next Wave)`;
-      ctx.fillText(waveTxt, 22, 38);
-    }
-  }
-
-  function render() {
-    ctx.clearRect(0,0,W,H);
-    drawGrass();
-    drawPath();
-    drawTowers();
-    drawEnemies();
-    drawBullets();
-    drawOverlay();
-  }
-
-  // boot
-  reset();
-  requestAnimationFrame(tick);
-})();
-</script>
+    syncUI();
+  </script>
 </body>
 </html>
